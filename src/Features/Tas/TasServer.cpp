@@ -384,7 +384,8 @@ static bool processCommands(ClientData &cl) {
 				send(cl.sock, (const char *)buf.data(), buf.size(), 0);
 			}
 			break;
-
+		case 110: // send movement info
+			
 		default:
 			return false; // Bad command - disconnect
 		}
