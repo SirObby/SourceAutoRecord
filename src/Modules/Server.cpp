@@ -14,6 +14,7 @@
 #include "Features/Hud/StrafeHud.hpp"
 #include "Features/Hud/StrafeQuality.hpp"
 #include "Features/Hud/InputHud.hpp"
+#include "Features/Hud/Toasts.hpp"
 #include "Features/NetMessage.hpp"
 #include "Features/PlayerTrace.hpp"
 #include "Features/ReloadedFix.hpp"
@@ -44,6 +45,10 @@
 #include <cstdint>
 #include <cstring>
 #include <cfloat>
+
+#ifdef _WIN32
+#	define strcasecmp _stricmp
+#endif
 
 #define RESET_COOP_PROGRESS_MESSAGE_TYPE "coop-reset"
 #define CM_FLAGS_MESSAGE_TYPE "cm-flags"
@@ -271,6 +276,8 @@ static bool FindClosestPassableSpace_Detour(void *entity, const Vector &ind_push
 }
 Hook FindClosestPassableSpace_Hook(&FindClosestPassableSpace_Detour);
 
+static int (*UTIL_GetCommandClientIndex)();
+
 extern Hook g_ViewPunch_Hook;
 DETOUR_T(void, Server::ViewPunch, const QAngle &offset) {
 	QAngle off1 = offset;
@@ -484,6 +491,9 @@ ON_EVENT(PRE_TICK) {
 	setPortalsThruPortals(sv_cheats.GetBool() && sar_portals_thru_portals.GetBool());
 }
 
+Variable sar_transition_timer("sar_transition_timer", "0", "Output how slow your dialogue fade was.\n");
+static int transition_time;
+
 extern Hook g_AcceptInputHook;
 
 // TODO: the windows signature is a bit dumb. fastcall is like thiscall
@@ -549,6 +559,31 @@ static void __cdecl AcceptInput_Hook(void *thisptr, const char *inputName, void 
 			TriggerCMFlag(1, time, true);
 		} else {
 			TriggerCMFlag(0, time, true);
+		}
+	}
+
+	if (sar_transition_timer.GetBool()) {
+		bool start = false, end = false;
+		if (engine->IsCoop()) {
+			if (strstr(entName, "relay_exit_succeed") && !strcasecmp(inputName, "Enable"))
+				start = true;
+			if (strstr(entName, "timer_try_exit") && !strcasecmp(inputName, "Kill"))
+				end = true;
+		} else {
+			if (!strcmp(entName, "@transition_script") && !strcmp(parameter.ToString(), "TransitionReady()"))
+				start = true;
+			if (!strcmp(entName, "@transition_from_map") && !strcmp(inputName, "Trigger"))
+				end = true;
+		}
+		if (start) {
+			transition_time = session->GetTick();
+		}
+		if (end) {
+			if (transition_time != 0) {
+				auto time = (session->GetTick() - transition_time)  / 60.0f;
+				toastHud.AddToast("transition", Utils::ssprintf("Transition lost %.3f sec", time));
+				transition_time = 0;
+			}
 		}
 	}
 
@@ -854,6 +889,12 @@ bool Server::Init() {
 	UTIL_FindClosestPassableSpace_Hook.SetFunc(UTIL_FindClosestPassableSpace);
 	FindClosestPassableSpace_Hook.SetFunc(FindClosestPassableSpace);
 
+#ifdef _WIN32
+	UTIL_GetCommandClientIndex = (decltype (UTIL_GetCommandClientIndex))Memory::Scan(server->Name(), "A1 ? ? ? ? 40 C3");
+#else
+	UTIL_GetCommandClientIndex = (decltype (UTIL_GetCommandClientIndex))Memory::Scan(server->Name(), "A1 ? ? ? ? 83 C0 01 C3");
+#endif
+
 	{
 		// a call to Plat_FloatTime in CGameMovement::CheckStuck
 #ifdef _WIN32
@@ -933,7 +974,9 @@ CON_COMMAND(sar_give_betsrighter, "sar_give_betsrighter [n] - gives the player i
 	}
 }
 DETOUR_COMMAND(Server::say) {
-	if (args.ArgC() != 2 || Utils::StartsWith(args[1], "!SAR:") || !networkManager.HandleGhostSay(args[1])) {
+	auto clientidx = UTIL_GetCommandClientIndex();
+	if (args.ArgC() != 2 || Utils::StartsWith(args[1], "!SAR:") || !networkManager.HandleGhostSay(args[1], clientidx)) {
+		g_wasChatType = 0;
 		Server::say_callback(args);
 	}
 }

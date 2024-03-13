@@ -29,12 +29,15 @@ OFFSET_DEFAULT(DebugDrawPhysCollide, 75, 75)
 OFFSET_DEFAULT(Con_IsVisible, 11, 11)
 OFFSET_DEFAULT(GetLevelNameShort, 53, 53)
 OFFSET_DEFAULT(GetLightForPoint, 1, 1)
+OFFSET_DEFAULT(GetPlayerInfo, 8, 8);
+OFFSET_DEFAULT(host_frametime_unbounded, 1, -1);
 
 // CHLClient
 OFFSET_DEFAULT(GetAllClasses, 8, 8)
 OFFSET_DEFAULT(HudProcessInput, 10, 10)
 OFFSET_DEFAULT(IN_ActivateMouse, 15, 15)
 OFFSET_DEFAULT(IN_DeactivateMouse, 16, 16)
+OFFSET_DEFAULT(ApplyMouse, 56, 56)
 OFFSET_DEFAULT(SteamControllerMove, 58, 58)
 OFFSET_DEFAULT(LevelInitPreEntity, 5, 5)
 
@@ -212,13 +215,13 @@ OFFSET_DEFAULT(SetKeyValueFloat, 12, 13)
 OFFSET_DEFAULT(SetKeyValueVector, 11, 14)
 
 // CVEngineServer
-OFFSET_DEFAULT(ChangeLevel, 0, 0)
 OFFSET_DEFAULT(ClientCommand, 39, 39)
 OFFSET_DEFAULT(ClientCommandKeyValues, 135, 135)
 OFFSET_DEFAULT(IsServerPaused, 81, 81)
 OFFSET_DEFAULT(ServerPause, 121, 121)
 OFFSET_DEFAULT(ChatPrintf, 22, 25)
 OFFSET_DEFAULT(MsgFunc_SayText2, 28, 35)
+OFFSET_DEFAULT(MsgFunc_SayTextReloaded, 26, 32)
 OFFSET_DEFAULT(GetTextColorForClient, 33, 41)
 
 // CSteam3Client
@@ -252,6 +255,9 @@ OFFSET_DEFAULT(GetSearchPath, 16, 16)
 
 // CGameRules
 OFFSET_DEFAULT(IsMultiplayer, 33, 34)
+
+// IClientRenderable
+OFFSET_DEFAULT(GetModel, 8, 8)
 
 // Others
 OFFSET_DEFAULT(tickcount, 95, 64)
@@ -299,12 +305,18 @@ OFFSET_DEFAULT(VideoMode_Create, 88, 103)
 OFFSET_DEFAULT(videomode, 35, 178)
 OFFSET_EMPTY(VID_ProcessMovieFrame_1)
 OFFSET_EMPTY(VID_ProcessMovieFrame_2)
-OFFSET_DEFAULT(snd_linear_count, 63, 57)
-OFFSET_DEFAULT(snd_p, 98, 65)
-OFFSET_DEFAULT(snd_vol, 108, 71)
+OFFSET_DEFAULT(snd_linear_count, 63, 69)
+OFFSET_DEFAULT(snd_p, 98, 116)
+OFFSET_DEFAULT(snd_vol, 108, 122)
 OFFSET_DEFAULT(StartTouch, 102, 103)
+OFFSET_DEFAULT(UncacheUnusedMaterials, 77, 77)
+OFFSET_DEFAULT(CreateMaterial, 81, 81)
 OFFSET_DEFAULT(FindMaterial, 82, 82)
 OFFSET_DEFAULT(CreateProceduralTexture, 91, 91)
+OFFSET_DEFAULT(RemoveMaterial, 156, 157)
+OFFSET_DEFAULT(DecrementReferenceCount, 13, 13)
+OFFSET_DEFAULT(g_pTextureManager, 8, 4)
+OFFSET_DEFAULT(RemoveTexture, 30, 30)
 OFFSET_DEFAULT(GetRenderContext, 113, 113)
 OFFSET_DEFAULT(CreateDebugMesh, 41, 42)
 OFFSET_DEFAULT(DestroyDebugMesh, 42, 43)
@@ -345,3 +357,6 @@ OFFSET_LINMOD(StartDrawing, 692)
 OFFSET_LINMOD(FinishDrawing, 627)
 OFFSET_LINMOD(OnGameOverlayActivated, 152)
 OFFSET_LINMOD(FontManager, 11)
+OFFSET_LINMOD(snd_linear_count, 57)
+OFFSET_LINMOD(snd_p, 65)
+OFFSET_LINMOD(snd_vol, 71)

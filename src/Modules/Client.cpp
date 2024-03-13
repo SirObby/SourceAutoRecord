@@ -48,6 +48,12 @@ Variable r_drawviewmodel;
 Variable sar_disable_coop_score_hud("sar_disable_coop_score_hud", "0", "Disables the coop score HUD which appears in demo playback.\n");
 Variable sar_disable_save_status_hud("sar_disable_save_status_hud", "0", "Disables the saving/saved HUD which appears when you make a save.\n");
 
+Variable sar_patch_small_angle_decay("sar_patch_small_angle_decay", "0", "Patches small angle decay (not minor decay).\n");
+Variable sar_patch_major_angle_decay("sar_patch_major_angle_decay", "0", "Patches major pitch angle decay. Requires cheats.\n");
+#ifdef _WIN32
+Variable sar_patch_minor_angle_decay("sar_patch_minor_angle_decay", "0", "Patches minor pitch angle decay present on Windows version of the game.\n");
+#endif
+
 REDECL(Client::LevelInitPreEntity);
 REDECL(Client::CreateMove);
 REDECL(Client::CreateMove2);
@@ -59,6 +65,7 @@ REDECL(Client::GetTextColorForClient);
 REDECL(Client::DecodeUserCmdFromBuffer);
 REDECL(Client::CInput_CreateMove);
 REDECL(Client::GetButtonBits);
+REDECL(Client::ApplyMouse);
 REDECL(Client::SteamControllerMove);
 REDECL(Client::playvideo_end_level_transition_callback);
 REDECL(Client::OverrideView);
@@ -66,6 +73,12 @@ REDECL(Client::ProcessMovement);
 REDECL(Client::DrawTranslucentRenderables);
 REDECL(Client::DrawOpaqueRenderables);
 REDECL(Client::CalcViewModelLag);
+REDECL(Client::AddShadowToReceiver);
+#ifdef _WIN32
+REDECL(Client::ApplyMouse_Mid);
+REDECL(Client::ApplyMouse_Mid_Continue);
+#endif
+
 
 CMDECL(Client::GetAbsOrigin, Vector, m_vecAbsOrigin);
 CMDECL(Client::GetAbsAngles, QAngle, m_angAbsRotation);
@@ -281,22 +294,34 @@ DETOUR(Client::MsgFunc_SayText2, bf_read &msg) {
 	msg.ReadUnsigned(8);
 
 	std::string str = "";
-	while (true) {
-		char c = (char)(uint8_t)msg.ReadUnsigned(8);
-		if (!c) break;
-		str += c;
-	}
+	if (sar.game->Is(SourceGame_Portal2)) {
+		while (true) {
+			char c = (char)(uint8_t)msg.ReadUnsigned(8);
+			if (!c) break;
+			str += c;
+		}
 
-	if (str != "\x01Portal2_Coloured_Chat_Format") {
-		console->Print("Your partner is on an old version of Portal 2! Tell them to update.\n");
-		msg = pre;
-		return Client::MsgFunc_SayText2(thisptr, msg);
-	}
+		if (str != "\x01Portal2_Coloured_Chat_Format") {
+			console->Print("Your partner is on an old version of Portal 2! Tell them to update.\n");
+			msg = pre;
+			return Client::MsgFunc_SayText2(thisptr, msg);
+		}
 
-	// Skip player name
-	while (true) {
-		char c = (char)(uint8_t)msg.ReadUnsigned(8);
-		if (!c) break;
+		// Skip player name
+		while (true) {
+			char c = (char)(uint8_t)msg.ReadUnsigned(8);
+			if (!c) break;
+		}
+	} else if (sar.game->Is(SourceGame_PortalReloaded)) {
+		// Reloaded uses the legacy format where it's just one string
+		while (true) {
+			char c = (char)(uint8_t)msg.ReadUnsigned(8);
+			if (!c) break;
+			str += c;
+			// People can put colons in names and chats, stupid.
+			// Too bad!
+			if (Utils::EndsWith(str, ": ")) break;
+		}
 	}
 
 	// Read actual message
@@ -306,6 +331,8 @@ DETOUR(Client::MsgFunc_SayText2, bf_read &msg) {
 		if (!c) break;
 		str += c;
 	}
+	// remove any newlines (reloaded / old chat format has one trailing)
+	str.erase(std::remove(str.begin(), str.end(), '\n'), str.end());
 
 	if (NetMessage::ChatData(str)) {
 		// skip the other crap, just in case it matters
@@ -401,6 +428,111 @@ DETOUR(Client::GetButtonBits, bool bResetState) {
 	return bits;
 }
 
+#ifdef _WIN32
+extern Hook g_ApplyMouseMidHook;
+DETOUR_MID_MH(Client::ApplyMouse_Mid) {
+	static float input;
+	static float result;
+	_asm {
+		fstp dword ptr[input]
+	}
+
+	result = acosf(input);
+
+	_asm {
+		fld dword ptr[result]
+		jmp Client::ApplyMouse_Mid_Continue
+	}
+}
+Hook g_ApplyMouseMidHook(&Client::ApplyMouse_Mid_Hook);
+#endif
+
+static void (*MatrixBuildRotationAboutAxis)(Vector &, float, matrix3x4_t &);
+extern Hook MatrixBuildRotationAboutAxisHook;
+static void MatrixBuildRotationAboutAxis_Detour(Vector *vAxisOfRot, float angleDegrees, matrix3x4_t *dst) {
+	float radians;
+	float xSquared;
+	float ySquared;
+	float zSquared;
+	float fSin;
+	float fCos;
+
+	// this is the actual patch
+	// some decay will happen initially when you get major decay
+	if (fabsf(vAxisOfRot->z - 1.0f) < 0.000001f) {
+		vAxisOfRot->z = 1.0f;
+	}
+
+	radians = angleDegrees * (M_PI / 180.0);
+	#ifdef _WIN32
+		fSin = sin(radians);
+		fCos = cos(radians);
+	#else
+		sincosf(radians, &fSin, &fCos);
+	#endif
+
+	xSquared = vAxisOfRot->x * vAxisOfRot->x;
+	ySquared = vAxisOfRot->y * vAxisOfRot->y;
+	zSquared = vAxisOfRot->z * vAxisOfRot->z;
+
+	dst->m_flMatVal[0][0] = xSquared + (1 - xSquared) * fCos;
+	dst->m_flMatVal[1][0] = vAxisOfRot->x * vAxisOfRot->y * (1 - fCos) + vAxisOfRot->z * fSin;
+	dst->m_flMatVal[2][0] = vAxisOfRot->z * vAxisOfRot->x * (1 - fCos) - vAxisOfRot->y * fSin;
+
+	dst->m_flMatVal[0][1] = vAxisOfRot->x * vAxisOfRot->y * (1 - fCos) - vAxisOfRot->z * fSin;
+	dst->m_flMatVal[1][1] = ySquared + (1 - ySquared) * fCos;
+	dst->m_flMatVal[2][1] = vAxisOfRot->y * vAxisOfRot->z * (1 - fCos) + vAxisOfRot->x * fSin;
+
+	dst->m_flMatVal[0][2] = vAxisOfRot->z * vAxisOfRot->x * (1 - fCos) + vAxisOfRot->y * fSin;
+	dst->m_flMatVal[1][2] = vAxisOfRot->y * vAxisOfRot->z * (1 - fCos) - vAxisOfRot->x * fSin;
+	dst->m_flMatVal[2][2] = zSquared + (1 - zSquared) * fCos;
+
+	dst->m_flMatVal[0][3] = 0;
+	dst->m_flMatVal[1][3] = 0;
+	dst->m_flMatVal[2][3] = 0;
+}
+Hook MatrixBuildRotationAboutAxisHook(&MatrixBuildRotationAboutAxis_Detour);
+
+// C_Paint_Input::ApplyMouse
+DETOUR(Client::ApplyMouse, int nSlot, QAngle &viewangles, CUserCmd *cmd, float mouse_x, float mouse_y) {
+	auto lastViewAngles = viewangles;
+
+#ifdef _WIN32
+	if (sar_patch_minor_angle_decay.GetBool()) g_ApplyMouseMidHook.Enable();
+#endif
+	if (sar_patch_major_angle_decay.GetBool() && sv_cheats.GetBool()) MatrixBuildRotationAboutAxisHook.Enable();
+	auto result = Client::ApplyMouse(thisptr, nSlot, viewangles, cmd, mouse_x, mouse_y);
+	if (sar_patch_major_angle_decay.GetBool() && sv_cheats.GetBool()) MatrixBuildRotationAboutAxisHook.Disable();
+#ifdef _WIN32
+	if (sar_patch_minor_angle_decay.GetBool()) g_ApplyMouseMidHook.Disable();
+#endif
+
+	Vector delta = {
+		viewangles.x - lastViewAngles.x,
+		viewangles.y - lastViewAngles.y,
+		viewangles.z - lastViewAngles.z,
+	};
+
+	auto upDelta = 1.0f;
+	auto player = client->GetPlayer(nSlot + 1);
+	if (player) {
+		upDelta = fabsf(client->GetPortalLocal(player).m_up.z - 1);
+	}
+
+	if (sar_patch_small_angle_decay.GetBool()) {
+		// yaw decay
+		if (mouse_x == 0.0f && delta.y != 0.0f) viewangles.y = lastViewAngles.y;
+		if ((upDelta == 0.0f || (fabsf(viewangles.x) < 45.0f))
+#ifdef _WIN32
+			&& fabsf(viewangles.x) > 15.0f
+#endif
+			&& (mouse_y == 0.0f && delta.x != 0.0f))
+			viewangles.x = lastViewAngles.x;
+	}
+
+	return result;
+}
+
 // CInput::SteamControllerMove
 DETOUR(Client::SteamControllerMove, int nSlot, float flFrametime, CUserCmd *cmd) {
 	auto result = Client::SteamControllerMove(thisptr, nSlot, flFrametime, cmd);
@@ -459,7 +591,11 @@ DETOUR(Client::ProcessMovement, void *player, CMoveData *move) {
 }
 
 CON_COMMAND(sar_chat, "sar_chat - open the chat HUD\n") {
-	client->OpenChat();
+	if (g_chatType == 0) {
+		g_wasChatType = 0;
+		g_chatType = 1;
+		client->OpenChat();
+	}
 }
 
 extern Hook g_DrawTranslucentRenderablesHook;
@@ -493,6 +629,38 @@ DETOUR_T(void, Client::CalcViewModelLag, Vector &origin, QAngle &angles, QAngle 
 	g_CalcViewModelLagHook.Enable();
 }
 Hook g_CalcViewModelLagHook(&Client::CalcViewModelLag_Hook);
+
+extern Hook g_AddShadowToReceiverHook;
+DETOUR_T(void, Client::AddShadowToReceiver, unsigned short handle, void *pRenderable, int type) {
+	if (sar_disable_viewmodel_shadows.GetBool()) {
+		// IClientRenderable::GetModel()
+		using _GetModel = model_t *(__rescall *)(void *);
+		model_t *model = Memory::VMT<_GetModel>(pRenderable, Offsets::GetModel)(pRenderable);
+
+		if (!strcmp(model->szPathName, "models/weapons/v_portalgun.mdl"))
+			return;
+	}
+
+	g_AddShadowToReceiverHook.Disable();
+	Client::AddShadowToReceiver(thisptr, handle, pRenderable, type);
+	g_AddShadowToReceiverHook.Enable();
+}
+Hook g_AddShadowToReceiverHook(&Client::AddShadowToReceiver_Hook);
+
+static void (*MsgPreSkipToNextLevel)();
+
+CON_COMMAND(sar_workshop_skip, "sar_workshop_skip - Skips to the next level in workshop\n") {
+	if (!sv_cheats.GetBool()) {
+		return console->Print("This command requires sv_cheats\n");
+	}
+	if (strncmp("workshop/", engine->GetCurrentMapName().c_str(), 9)) {
+		return console->Print("This command only works in workshop maps.\n");
+	}
+	// open the console so that it works on binds lmao (the menu has to be visible probably)
+	// debug with -vguimessages launch option
+	engine->ExecuteCommand("showconsole");
+	MsgPreSkipToNextLevel();
+}
 
 bool Client::Init() {
 	bool readJmp = false;
@@ -538,6 +706,8 @@ bool Client::Init() {
 				if (sar.game->Is(SourceGame_Portal2)) {
 					this->g_HudChat->Hook(Client::MsgFunc_SayText2_Hook, Client::MsgFunc_SayText2, Offsets::MsgFunc_SayText2);
 					this->g_HudChat->Hook(Client::GetTextColorForClient_Hook, Client::GetTextColorForClient, Offsets::GetTextColorForClient);
+				} else if (sar.game->Is(SourceGame_PortalReloaded)) {
+					this->g_HudChat->Hook(Client::MsgFunc_SayText2_Hook, Client::MsgFunc_SayText2, Offsets::MsgFunc_SayTextReloaded);
 				}
 			}
 
@@ -562,6 +732,20 @@ bool Client::Init() {
 			g_Input->Hook(Client::DecodeUserCmdFromBuffer_Hook, Client::DecodeUserCmdFromBuffer, Offsets::DecodeUserCmdFromBuffer);
 			g_Input->Hook(Client::GetButtonBits_Hook, Client::GetButtonBits, Offsets::GetButtonBits);
 			g_Input->Hook(Client::SteamControllerMove_Hook, Client::SteamControllerMove, Offsets::SteamControllerMove);
+			g_Input->Hook(Client::ApplyMouse_Hook, Client::ApplyMouse, Offsets::ApplyMouse);
+
+			#ifdef _WIN32
+				auto ApplyMouse_Mid_addr = (uintptr_t)(Client::ApplyMouse) + 0x3E1;
+				g_ApplyMouseMidHook.SetFunc(ApplyMouse_Mid_addr);
+				g_ApplyMouseMidHook.Disable();
+				Client::ApplyMouse_Mid_Continue = ApplyMouse_Mid_addr + 0x5;
+				MatrixBuildRotationAboutAxis = (decltype(MatrixBuildRotationAboutAxis))Memory::Scan(client->Name(), "55 8B EC 51 F3 0F 10 45 ? 0F 5A C0 F2 0F 59 05 ? ? ? ? 66 0F 5A C0 F3 0F 11 45 ? E8 ? ? ? ? F3 0F 11 45 ? F3 0F 10 45 ? E8 ? ? ? ? 8B 45 ? F3 0F 10 08");
+			#else
+				MatrixBuildRotationAboutAxis = (decltype(MatrixBuildRotationAboutAxis))Memory::Scan(client->Name(), "56 66 0F EF C0 53 83 EC 14 8B 5C 24 ? 8D 44 24");
+			#endif
+
+			MatrixBuildRotationAboutAxisHook.SetFunc(MatrixBuildRotationAboutAxis);
+			MatrixBuildRotationAboutAxisHook.Disable(); // only during ApplyMouse
 
 			in_forceuser = Variable("in_forceuser");
 			if (!!in_forceuser && this->g_Input) {
@@ -609,6 +793,12 @@ bool Client::Init() {
 	g_DrawTranslucentRenderablesHook.SetFunc(Client::DrawTranslucentRenderables);
 	g_DrawOpaqueRenderablesHook.SetFunc(Client::DrawOpaqueRenderables);
 
+#ifdef _WIN32
+	MsgPreSkipToNextLevel = (decltype(MsgPreSkipToNextLevel))Memory::Scan(client->Name(), "57 8B F9 E8 ? ? ? ? 8B C8 E8 ? ? ? ? 0B C2");
+#else
+	MsgPreSkipToNextLevel = (decltype(MsgPreSkipToNextLevel))Memory::Scan(client->Name(), "53 83 EC 08 E8 ? ? ? ? 83 EC 0C 50 E8 ? ? ? ? 83 C4 10 09 C2");
+#endif
+
 	if (sar.game->Is(SourceGame_Portal2)) {
 #ifdef _WIN32
 		Client::CalcViewModelLag = (decltype(Client::CalcViewModelLag))Memory::Scan(client->Name(), "53 8B DC 83 EC 08 83 E4 F0 83 C4 04 55 8B 6B 04 89 6C 24 04 8B EC 83 EC 1C 56 6A 00 6A 00 8D 45 F4 8B F1 8B 4B 0C 50 51 E8 ? ? ? ?");
@@ -618,6 +808,20 @@ bool Client::Init() {
 	}
 
 	g_CalcViewModelLagHook.SetFunc(Client::CalcViewModelLag);
+
+	if (sar.game->Is(SourceGame_Portal2 | SourceGame_PortalStoriesMel | SourceGame_PortalReloaded)) {
+#ifdef _WIN32
+		Client::AddShadowToReceiver = (decltype(Client::AddShadowToReceiver))Memory::Scan(client->Name(), "55 8B EC 51 53 56 57 0F B7 7D 08");
+#else
+		if (sar.game->Is(SourceGame_Portal2)) {
+			Client::AddShadowToReceiver = (decltype(Client::AddShadowToReceiver))Memory::Scan(client->Name(), "55 89 E5 57 56 53 83 EC 44 8B 45 0C 8B 5D 08 8B 55 14 8B 75 10");
+		} else {
+			Client::AddShadowToReceiver = (decltype(Client::AddShadowToReceiver))Memory::Scan(client->Name(), "55 89 E5 57 56 53 83 EC ? 8B 45 ? 8B 4D ? 8B 7D ? 89 45 ? 0F B7 C0");
+		}
+#endif
+	}
+
+	g_AddShadowToReceiverHook.SetFunc(Client::AddShadowToReceiver);
 
 	// Get at gamerules
 	{

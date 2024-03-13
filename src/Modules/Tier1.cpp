@@ -32,13 +32,6 @@ CON_COMMAND(sar_con_filter_block, "sar_con_filter_block <string> [end] - add a d
 	g_con_filter_rules.push_back({false, args[1], args.ArgC() == 3 ? args[2] : ""});
 }
 
-CON_COMMAND(sar_con_filter_reset, "sar_con_filter_reset - clear the console filter rule list\n") {
-	if (args.ArgC() != 1) {
-		return console->Print(sar_con_filter_reset.ThisPtr()->m_pszHelpString);
-	}
-	g_con_filter_rules.clear();
-}
-
 struct BufferedPart {
 	enum class Type {
 		COL_PRINT,
@@ -120,6 +113,25 @@ public:
 		this->buf.clear();
 	}
 
+	void ResetFilters() {
+		g_con_filter_rules.clear();
+		this->do_until_rule = {};
+	}
+
+	void DebugFilters() {
+		bool filter = sar_con_filter.GetBool();
+		sar_con_filter.SetValue("0");
+		console->Print("Filter rules:\n");
+		for (auto &rule : g_con_filter_rules) {
+			console->Print("(%s) \"%s\" \"%s\"\n", rule.allow ? "allow" : "block", rule.str.c_str(), rule.end.c_str());
+		}
+		if (this->do_until_rule.has_value()) {
+			auto rule = this->do_until_rule.value();
+			console->Print("current rule: (%s) \"%s\" \"%s\"\n", rule.allow ? "allow" : "block", rule.str.c_str(), rule.end.c_str());
+		}
+		sar_con_filter.SetValue(filter ? "1" : "0");
+	}
+
 private:
 	bool IsNewline(const char *str) {
 		while (*str == ' ') ++str;
@@ -129,11 +141,10 @@ private:
 	bool MatchesFilters(const char *msg) {
 		if (!sar_con_filter.isRegistered || !sar_con_filter.GetBool()) return true;
 
-		if (this->do_until_end) {
-			bool match = *this->do_until_end;
-			if (MatchesPattern(msg, this->end_pat.c_str())) {
-				this->end_pat = "";
-				this->do_until_end = {};
+		if (this->do_until_rule.has_value()) {
+			bool match = this->do_until_rule->allow;
+			if (MatchesPattern(msg, this->do_until_rule->end.c_str())) {
+				this->do_until_rule = {};
 			}
 			return match;
 		}
@@ -141,8 +152,7 @@ private:
 		for (auto &rule : g_con_filter_rules) {
 			if (MatchesPattern(msg, rule.str.c_str())) {
 				if (!MatchesPattern(msg, rule.end.c_str())) {
-					this->do_until_end = rule.allow;
-					this->end_pat = rule.end;
+					this->do_until_rule = rule;
 				}
 				return rule.allow;
 			}
@@ -189,8 +199,7 @@ private:
 	}
 
 	std::vector<BufferedPart> buf;
-	std::string end_pat;
-	std::optional<bool> do_until_end;
+	std::optional<ConFilterRule> do_until_rule;
 	bool last_was_newline;
 };
 
@@ -200,6 +209,20 @@ ON_EVENT(FRAME) {
 	// Flush any un-written string since we haven't received anything
 	// terminating the line this frame
 	if (tier1->orig_display_func) g_con_display_hook.Flush();
+}
+
+CON_COMMAND(sar_con_filter_reset, "sar_con_filter_reset - clear the console filter rule list\n") {
+	if (args.ArgC() != 1) {
+		return console->Print(sar_con_filter_reset.ThisPtr()->m_pszHelpString);
+	}
+	g_con_display_hook.ResetFilters();
+}
+
+CON_COMMAND(sar_con_filter_debug, "sar_con_filter_debug - print the console filter rule list\n") {
+	if (args.ArgC() != 1) {
+		return console->Print(sar_con_filter_debug.ThisPtr()->m_pszHelpString);
+	}
+	g_con_display_hook.DebugFilters();
 }
 
 bool Tier1::Init() {

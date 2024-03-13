@@ -69,6 +69,9 @@ public:
 	void OpenChat();
 
 public:
+	// CClientShadowMgr::AddShadowToReceiver
+	DECL_DETOUR_T(void, AddShadowToReceiver, unsigned short handle, void *pRenderable, int type);
+
 	// CBaseViewModel::CalcViewModelLag
 	DECL_DETOUR_T(void, CalcViewModelLag, Vector &origin, QAngle &angles, QAngle &original_angles);
 
@@ -116,6 +119,9 @@ public:
 	// CInput::GetButtonBits
 	DECL_DETOUR(GetButtonBits, bool bResetState);
 
+	// C_Paint_Input::ApplyMouse
+	DECL_DETOUR(ApplyMouse, int nSlot, QAngle &viewangles, CUserCmd *cmd, float mouse_x, float mouse_y);
+
 	// CInput::SteamControllerMove
 	DECL_DETOUR(SteamControllerMove, int nSlot, float flFrametime, CUserCmd *cmd);  //	is it slot though? :thinking:
 
@@ -123,6 +129,12 @@ public:
 	DECL_DETOUR_T(void, OverrideView, CViewSetup *m_View);
 
 	DECL_DETOUR_COMMAND(playvideo_end_level_transition);
+
+	#ifdef _WIN32
+		// C_Paint_Input::ApplyMouse
+		static uintptr_t ApplyMouse_Mid_Continue;
+		DECL_DETOUR_MID_MH(ApplyMouse_Mid);
+	#endif
 
 	bool Init() override;
 	void Shutdown() override;

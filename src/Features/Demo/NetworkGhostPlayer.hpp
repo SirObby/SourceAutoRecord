@@ -106,7 +106,7 @@ public:
 	void UpdateCountdown();
 
 	bool IsSyncing();
-	bool HandleGhostSay(const char *str);
+	bool HandleGhostSay(const char *str, int clientidx);
 	bool AcknowledgeGhost(std::shared_ptr<GhostEntity> ghost);
 
 	void UpdateSyncUi();
@@ -121,3 +121,6 @@ extern Command ghost_disconnect;
 extern Command ghost_message;
 extern Command ghost_ping;
 extern Command ghost_name;
+
+extern int g_chatType;
+extern int g_wasChatType;

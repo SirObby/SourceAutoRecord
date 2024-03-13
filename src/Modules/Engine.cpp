@@ -5,6 +5,7 @@
 #include "EngineDemoPlayer.hpp"
 #include "EngineDemoRecorder.hpp"
 #include "Event.hpp"
+#include "FileSystem.hpp"
 #include "InputSystem.hpp"
 #include "Features/AchievementTracker.hpp"
 #include "Features/Camera.hpp"
@@ -56,14 +57,18 @@ Variable sar_pause_at("sar_pause_at", "-1", -1, "Pause at the specified tick. -1
 Variable sar_pause_for("sar_pause_for", "0", 0, "Pause for this amount of ticks.\n");
 
 Variable sar_tick_debug("sar_tick_debug", "0", 0, 3, "Output debugging information to the console related to ticks and frames.\n");
+Variable sar_frametime_debug("sar_frametime_debug", "0", "Output debugging information to the console related to frametime.\n"); // see also host_print_frame_times
+Variable sar_frametime_uncap("sar_frametime_uncap", "0", "EXPERIMENTAL - USE AT OWN RISK. Removes the 10-1000 FPS cap on frametime. More info https://wiki.portal2.sr/Frametime\n");
 
 Variable sar_cm_rightwarp("sar_cm_rightwarp", "0", "Fix CM wrongwarp.\n");
 
 float g_cur_fps = 0.0f;
 
+int g_cap_frametime = 0;
+bool g_coop_pausable = false;
+
 REDECL(Engine::Disconnect);
 REDECL(Engine::SetSignonState);
-REDECL(Engine::ChangeLevel);
 REDECL(Engine::ClientCommandKeyValues);
 #ifndef _WIN32
 REDECL(Engine::GetMouseDelta);
@@ -86,6 +91,8 @@ REDECL(Engine::stop_transition_videos_fadeout_callback);
 REDECL(Engine::load_callback);
 REDECL(Engine::give_callback);
 REDECL(Engine::exec_callback);
+REDECL(Engine::changelevel_command_callback);
+REDECL(Engine::changelevel2_command_callback);
 #ifdef _WIN32
 REDECL(Engine::ParseSmoothingInfo_Skip);
 REDECL(Engine::ParseSmoothingInfo_Default);
@@ -95,10 +102,10 @@ REDECL(Engine::ParseSmoothingInfo_Mid_Trampoline);
 #endif
 
 void Engine::ExecuteCommand(const char *cmd, bool immediately) {
+	this->SendToCommandBuffer(cmd, 0);
 	if (immediately) {
-		this->ExecuteClientCmd(this->engineClient->ThisPtr(), cmd);
-	} else {
-		this->ClientCmd(this->engineClient->ThisPtr(), cmd);
+		// HACKHACK: This effectively just does Cbuf_Execute, could we get at that by itself?
+		this->ExecuteClientCmd(this->engineClient->ThisPtr(), "");
 	}
 }
 int Engine::GetTick() {
@@ -194,6 +201,7 @@ std::string Engine::GetCurrentMapName() {
 }
 
 bool Engine::IsCoop() {
+	if (GetCurrentMapName().size() == 0) return false;
 	if (*client->gamerules) {
 		using _IsMultiplayer = bool (__rescall *)(void *thisptr);
 		return Memory::VMT<_IsMultiplayer>(*client->gamerules, Offsets::IsMultiplayer)(*client->gamerules);
@@ -290,8 +298,15 @@ ON_EVENT(PRE_TICK) {
 
 ON_EVENT(PRE_TICK) {
 	if (engine->shouldPauseForSync && event.tick >= 0) {
-		engine->ExecuteCommand("pause", true);
-		engine->shouldPauseForSync = false;
+		if (!engine->IsCoop() || (!engine->IsOrange() && g_orangeReady)) {
+			if (engine->IsCoop()) {
+				g_coop_pausable = Variable("sv_pausable").GetBool();
+				engine->ExecuteCommand("stopvideos"); // loading animation goes over sync screen
+				Variable("sv_pausable").SetValue("1");
+			}
+			engine->ExecuteCommand("pause", true);
+			engine->shouldPauseForSync = false;
+		}
 	}
 }
 
@@ -329,10 +344,19 @@ DETOUR(Engine::SetSignonState, int state, int count, void *unk) {
 	return ret;
 }
 
-// CVEngineServer::ChangeLevel
-DETOUR(Engine::ChangeLevel, const char *s1, const char *s2) {
-	if (s1 && engine->GetCurrentMapName() != s1) engine->isLevelTransition = true;
-	return Engine::ChangeLevel(thisptr, s1, s2);
+DETOUR_COMMAND(Engine::changelevel_command) {
+	if (args.ArgC() >= 2) {
+		std::string map = args[1];
+		if (fileSystem->MapExists(map) && engine->GetCurrentMapName() != map) engine->isLevelTransition = true;
+	}
+	return Engine::changelevel_command_callback(args);
+}
+DETOUR_COMMAND(Engine::changelevel2_command) {
+	if (args.ArgC() >= 2) {
+		std::string map = args[1];
+		if (fileSystem->MapExists(map) && engine->GetCurrentMapName() != map) engine->isLevelTransition = true;
+	}
+	return Engine::changelevel2_command_callback(args);
 }
 
 // CVEngineServer::ClientCommandKeyValues
@@ -567,10 +591,13 @@ DETOUR_COMMAND(Engine::exec) {
 
 DECL_CVAR_CALLBACK(ss_force_primary_fullscreen) {
 	if (engine->GetMaxClients() >= 2 && client->GetChallengeStatus() != CMStatus::CHALLENGE && ss_force_primary_fullscreen.GetInt() == 0) {
-		if (engine->startedTransitionFadeout && !engine->forcedPrimaryFullscreen && !engine->IsOrange()) {
-			engine->forcedPrimaryFullscreen = true;
-			SpeedrunTimer::Resume();
-			SpeedrunTimer::OnLoad();
+		if (engine->startedTransitionFadeout && !engine->coopResumed && !engine->IsOrange()) {
+			// if the game is not Portal Reloaded (see src/Features/ReloadedFix.cpp)
+			if (sar.game->GetVersion() != SourceGame_PortalReloaded) {
+				engine->coopResumed = true;
+				SpeedrunTimer::Resume();
+				SpeedrunTimer::OnLoad();
+			}
 		}
 	}
 }
@@ -634,6 +661,7 @@ bool Engine::IsSkipping() {
 }
 
 static float *host_frametime;
+static float *host_frametime_unbounded;
 void Host_AccumulateTime_Detour(float dt);
 void (*Host_AccumulateTime)(float dt);
 static Hook Host_AccumulateTime_Hook(&Host_AccumulateTime_Detour);
@@ -649,7 +677,21 @@ void Host_AccumulateTime_Detour(float dt) {
 		--g_advance;
 	} else {
 		*host_frametime = 0;
+		*host_frametime_unbounded = 0;
 	}
+
+	if (*host_frametime != *host_frametime_unbounded) {
+		if (sar_frametime_uncap.GetBool() && g_cap_frametime == 0) {
+			if (sar_frametime_debug.GetBool()) console->Print("Host_AccumulateTime: %f (uncapped from %f)\n", *host_frametime_unbounded, *host_frametime);
+			*host_frametime = *host_frametime_unbounded;
+		} else {
+			if (sar_frametime_debug.GetBool()) console->Print("Host_AccumulateTime: %f (capped to %f)\n", *host_frametime_unbounded, *host_frametime);
+		}
+	} else {
+		if (sar_frametime_debug.GetBool()) console->Print("Host_AccumulateTime: %f\n", *host_frametime);
+	}
+
+	if (g_cap_frametime == 2) g_cap_frametime = 0;
 }
 
 void _Host_RunFrame_Render_Detour();
@@ -802,6 +844,22 @@ Color Engine::GetLightAtPoint(Vector point) {
 	return Color{(uint8_t)(light.x * 255), (uint8_t)(light.y * 255), (uint8_t)(light.z * 255), 255};
 }
 
+bool Engine::GetPlayerInfo(int ent_num, player_info_t* pInfo)
+{
+	return this->GetInfo(this->engineClient->ThisPtr(), ent_num, pInfo);
+}
+
+std::string Engine::GetPartnerSteamID32() {
+	player_info_t pInfo;
+
+	if (IsOrange()) {
+		GetPlayerInfo(1, &pInfo);
+	} else {
+		GetPlayerInfo(2, &pInfo);
+	}
+	return std::to_string(pInfo.friendsID);
+}
+
 static _CommandCompletionCallback playdemo_orig_completion;
 DECL_COMMAND_FILE_COMPLETION(playdemo, ".dem", engine->GetGameDirectory(), 1)
 
@@ -827,6 +885,7 @@ bool Engine::Init() {
 		this->Con_IsVisible = this->engineClient->Original<_Con_IsVisible>(Offsets::Con_IsVisible);
 		this->GetLevelNameShort = this->engineClient->Original<_GetLevelNameShort>(Offsets::GetLevelNameShort);
 		this->GetLightForPoint = this->engineClient->Original<_GetLightForPoint>(Offsets::GetLightForPoint);
+		this->GetInfo = this->engineClient->Original<_GetPlayerInfo>(Offsets::GetPlayerInfo);
 
 #ifndef _WIN32
 		this->engineClient->Hook(Engine::GetMouseDelta_Hook, Engine::GetMouseDelta, Offsets::GetMouseDelta);
@@ -847,7 +906,6 @@ bool Engine::Init() {
 		*OnGameOverlayActivated = reinterpret_cast<_OnGameOverlayActivated>(Engine::OnGameOverlayActivated_Hook);
 
 		if (this->g_VEngineServer = Interface::Create(this->Name(), "VEngineServer022")) {
-			this->g_VEngineServer->Hook(Engine::ChangeLevel_Hook, Engine::ChangeLevel, Offsets::ChangeLevel);
 			this->g_VEngineServer->Hook(Engine::ClientCommandKeyValues_Hook, Engine::ClientCommandKeyValues, Offsets::ClientCommandKeyValues);
 			this->ClientCommand = this->g_VEngineServer->Original<_ClientCommand>(Offsets::ClientCommand);
 			this->IsServerPaused = this->g_VEngineServer->Original<_IsServerPaused>(Offsets::IsServerPaused);
@@ -967,6 +1025,7 @@ bool Engine::Init() {
 		host_frametime = *(float **)((uintptr_t)Host_AccumulateTime + 70);
 	}
 #endif
+	host_frametime_unbounded = host_frametime + Offsets::host_frametime_unbounded;
 
 	Host_AccumulateTime_Hook.SetFunc(Host_AccumulateTime);
 
@@ -1027,6 +1086,8 @@ bool Engine::Init() {
 	Command::Hook("gameui_activate", Engine::gameui_activate_callback_hook, Engine::gameui_activate_callback);
 	Command::Hook("playvideo_end_level_transition", Engine::playvideo_end_level_transition_callback_hook, Engine::playvideo_end_level_transition_callback);
 	Command::Hook("stop_transition_videos_fadeout", Engine::stop_transition_videos_fadeout_callback_hook, Engine::stop_transition_videos_fadeout_callback);
+	Command::Hook("changelevel", Engine::changelevel_command_callback_hook, Engine::changelevel_command_callback);
+	Command::Hook("changelevel2", Engine::changelevel2_command_callback_hook, Engine::changelevel2_command_callback);
 	CVAR_HOOK_AND_CALLBACK(ss_force_primary_fullscreen);
 
 	host_framerate = Variable("host_framerate");
@@ -1115,6 +1176,8 @@ void Engine::Shutdown() {
 	Command::Unhook("gameui_activate", Engine::gameui_activate_callback);
 	Command::Unhook("playvideo_end_level_transition", Engine::playvideo_end_level_transition_callback);
 	Command::Unhook("stop_transition_videos_fadeout", Engine::stop_transition_videos_fadeout_callback);
+	Command::Unhook("changelevel", Engine::changelevel_command_callback);
+	Command::Unhook("changelevel2", Engine::changelevel2_command_callback);
 
 	if (this->demoplayer) {
 		this->demoplayer->Shutdown();

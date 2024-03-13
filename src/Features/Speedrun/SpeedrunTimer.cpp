@@ -200,22 +200,52 @@ ON_EVENT_P(SESSION_START, 1000) {
 ON_EVENT_P(SESSION_START, -1000) {
 	g_inDemoLoad = false;
 }
-ON_EVENT(SESSION_START) {
-	if (!sar_speedrun_skip_cutscenes.GetBool()) return;
-	if (sar.game->GetVersion() != SourceGame_Portal2) return;
-	if (Game::IsSpeedrunMod()) return;
 
-	if (SpeedrunTimer::IsRunning()) {
-		// HACKHACK: Since Any% enters Tube Ride via wrongwarp, skip_cutscenes
-		// doesn't work as ent_fire is restricted in CM. Workaround by
-		// temporarily setting cheats
-		sv_cheats.ThisPtr()->m_nValue = 1;
-		if (g_speedrun.lastMap == "sp_a2_bts6") {
-			engine->ExecuteCommand("ent_fire @exit_teleport Teleport", true);
-		} else if (g_speedrun.lastMap == "sp_a3_00") {
-			engine->ExecuteCommand("ent_fire speedmod kill; ent_fire bottomless_pit_teleport Teleport", true);
+static bool g_cutsceneskipdone = false;
+ON_EVENT(SESSION_START) {
+	g_cutsceneskipdone = false;
+	if (!sar_speedrun_skip_cutscenes.GetBool()) return;
+	if (engine->IsOrange()) return;
+	switch (sar.game->GetVersion()) {
+		case SourceGame_Portal2:
+			if (Game::IsSpeedrunMod()) return;
+
+			if (SpeedrunTimer::IsRunning()) {
+				// HACKHACK: Since Any% enters Tube Ride via wrongwarp, skip_cutscenes
+				// doesn't work as ent_fire is restricted in CM. Workaround by
+				// temporarily setting cheats
+				sv_cheats.ThisPtr()->m_nValue = 1;
+				if (g_speedrun.lastMap == "sp_a2_bts6") {
+					engine->ExecuteCommand("ent_fire @exit_teleport Teleport", true);
+				} else if (g_speedrun.lastMap == "sp_a3_00") {
+					engine->ExecuteCommand("ent_fire speedmod kill; ent_fire bottomless_pit_teleport Teleport", true);
+				}
+				sv_cheats.SetValue(sv_cheats.GetString());
+			}
+			break;
+		default:
+			break;
+	}
+}
+
+ON_EVENT(PRE_TICK) {
+	if (g_cutsceneskipdone) return;
+	if (!sar_speedrun_skip_cutscenes.GetBool()) return;
+	if (engine->IsOrange()) return;
+
+	if (engine->GetCurrentMapName() == "mp_coop_pr_cubes") {
+		if (g_orangeReady && entityList->GetEntityInfoByName("start_movie") != NULL) {
+			if (!sv_cheats.GetBool()) sv_cheats.SetValue(2); // mod is bad so we shouldn't reset cheats after
+			engine->ExecuteCommand("ent_fire start_movie kill; ent_fire vc_blue disable; ent_fire vc_orange disable; ent_fire @tp_blue enable; ent_fire @tp_orange enable; ent_fire rt_stop_sounds kill", true);
 		}
-		sv_cheats.SetValue(sv_cheats.GetString());
+		auto player = server->GetPlayer(1);
+		if (player) {
+			auto originZ = server->GetAbsOrigin(player).z;
+			if (originZ < 3518 && originZ > 3400) {
+				engine->ExecuteCommand("ent_fire prop_iris_1 SetAnimation item_dropper_open", true);
+				g_cutsceneskipdone = true;
+			}
+		}
 	}
 }
 
@@ -361,7 +391,7 @@ void SpeedrunTimer::Update() {
 	if (engine->IsCoop() && !engine->IsOrange() && SpeedrunTimer::IsRunning() && !sar_speedrun_time_pauses.GetBool()) {
 		if (pauseTimer->IsActive() && !g_speedrun.inCoopPause) {
 			// I don't understand how any of this works but I think we're off-by-one here
-			g_speedrun.saved = SpeedrunTimer::GetTotalTicks() + 1;
+			g_speedrun.saved = SpeedrunTimer::GetSplitTicks() + 1;
 			g_speedrun.inCoopPause = true;
 		} else if (!pauseTimer->IsActive() && g_speedrun.inCoopPause) {
 			g_speedrun.base = getCurrentTick();
@@ -1081,6 +1111,7 @@ ON_EVENT(PRE_TICK) {
 	if (!SpeedrunTimer::IsRunning()) return;
 	if (engine->IsOrange()) return;
 	if (engine->IsGamePaused()) return;
+	if (!g_orangeReady) return;
 
 	size_t next_split_idx = g_speedrun.splits.size();
 	if (next_split_idx >= g_autoreset_ticks.size()) return;

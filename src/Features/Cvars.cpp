@@ -136,20 +136,70 @@ void Cvars::PrintHelp(const CCommand &args) {
 	auto cmd = reinterpret_cast<ConCommandBase *>(tier1->FindCommandBase(tier1->g_pCVar->ThisPtr(), args[1]));
 	if (cmd) {
 		auto IsCommand = reinterpret_cast<bool (*)(void *)>(Memory::VMT(cmd, Offsets::IsCommand));
+		auto flags = GetFlags(*cmd);
 		if (!IsCommand(cmd)) {
 			auto cvar = reinterpret_cast<ConVar *>(cmd);
 			console->Print("%s\n", cvar->m_pszName);
 			console->Msg("Default: %s\n", cvar->m_pszDefaultValue);
-			console->Msg("Flags: %i\n", cvar->m_nFlags);
+			if (cvar->m_bHasMin) {
+				console->Msg("Min: %f\n", cvar->m_fMinVal);
+			}
+			if (cvar->m_bHasMax) {
+				console->Msg("Max: %f\n", cvar->m_fMaxVal);
+			}
+			console->Msg("Flags: %i - %s\n", cvar->m_nFlags, flags.c_str());
 			console->Msg("Description: %s\n", cvar->m_pszHelpString);
 		} else {
 			console->Print("%s\n", cmd->m_pszName);
-			console->Msg("Flags: %i\n", cmd->m_nFlags);
+			console->Msg("Flags: %i - %s\n", cmd->m_nFlags, flags.c_str());
 			console->Msg("Description: %s\n", cmd->m_pszHelpString);
 		}
 	} else {
 		console->Print("Unknown cvar name!\n");
 	}
+}
+std::string Cvars::GetFlags(const ConCommandBase &cmd) {
+	std::vector<std::string> flags {
+		"none",
+		"unregistered",
+		"developmentonly",
+		"game",
+		"client",
+		"hidden",
+		"protected",
+		"sponly",
+		"archive",
+		"notify",
+		"userinfo",
+		"printableonly",
+		"unlogged",
+		"never_as_string",
+		"replicated",
+		"cheat",
+		"ss",
+		"demo",
+		"dontrecord",
+		"ss_added",
+		"release",
+		"reload_materials",
+		"reload_textures",
+		"not_connected",
+		"material_system_thread",
+		"archive_gameconsole",
+		"accessible_from_threads",
+		"f26", "f27",
+		"server_can_execute",
+		"server_cannot_query",
+		"clientcmd_can_execute",
+		"f31"
+	};
+	auto result = std::string();
+	for (auto i = -1; i < 32; ++i) {
+		if ((i == -1 && cmd.m_nFlags == 0) || cmd.m_nFlags & (1 << i)) {
+			result += flags[i + 1] + " ";
+		}
+	}
+	return result;
 }
 void Cvars::Lock() {
 	if (!this->locked) {
@@ -177,6 +227,14 @@ void Cvars::Lock() {
 		cl_forwardspeed.AddFlag(FCVAR_CHEAT);
 		cl_sidespeed.AddFlag(FCVAR_CHEAT);
 		cl_backspeed.AddFlag(FCVAR_CHEAT);
+
+		Variable("soundfade").RemoveFlag(FCVAR_CLIENTCMD_CAN_EXECUTE);
+		Variable("leaderboard_open").RemoveFlag(FCVAR_CLIENTCMD_CAN_EXECUTE | FCVAR_SERVER_CAN_EXECUTE);
+		Variable("gameui_activate").RemoveFlag(FCVAR_SERVER_CAN_EXECUTE);
+		Variable("gameui_allowescape").RemoveFlag(FCVAR_SERVER_CAN_EXECUTE);
+		Variable("gameui_preventescape").RemoveFlag(FCVAR_SERVER_CAN_EXECUTE);
+		Variable("setpause").RemoveFlag(FCVAR_SERVER_CAN_EXECUTE);
+		Variable("snd_ducktovolume").RemoveFlag(FCVAR_SERVER_CAN_EXECUTE);
 
 		this->locked = true;
 	}
@@ -208,6 +266,14 @@ void Cvars::Unlock() {
 		cl_forwardspeed.RemoveFlag(FCVAR_CHEAT);
 		cl_sidespeed.RemoveFlag(FCVAR_CHEAT);
 		cl_backspeed.RemoveFlag(FCVAR_CHEAT);
+
+		Variable("soundfade").AddFlag(FCVAR_CLIENTCMD_CAN_EXECUTE);
+		Variable("leaderboard_open").AddFlag(FCVAR_CLIENTCMD_CAN_EXECUTE | FCVAR_SERVER_CAN_EXECUTE);
+		Variable("gameui_activate").AddFlag(FCVAR_SERVER_CAN_EXECUTE);
+		Variable("gameui_allowescape").AddFlag(FCVAR_SERVER_CAN_EXECUTE);
+		Variable("gameui_preventescape").AddFlag(FCVAR_SERVER_CAN_EXECUTE);
+		Variable("setpause").AddFlag(FCVAR_SERVER_CAN_EXECUTE);
+		Variable("snd_ducktovolume").AddFlag(FCVAR_SERVER_CAN_EXECUTE);
 
 		this->locked = false;
 	}

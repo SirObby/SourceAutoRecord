@@ -55,6 +55,7 @@ public:
 	using _ScreenPosition = int(__rescall *)(void *thisptr, const Vector &point, Vector &screen);
 	using _ConPrintEvent = int(__rescall *)(void *thisptr, IGameEvent *ev);
 	using _PrecacheModel = int(__rescall *)(void *thisptr, const char *, bool);
+	using _GetPlayerInfo = bool(__rescall *)(void* thisptr, int, player_info_t*);
 #ifdef _WIN32
 	// See comment in OverlayRender::startShading
 	using _GetLightForPoint = void (__rescall *)(void *thisptr, Vector &out, const Vector &pos, bool clamp);
@@ -97,6 +98,7 @@ public:
 	_GetLevelNameShort GetLevelNameShort = nullptr;
 	_CreateDebugMesh CreateDebugMesh = nullptr;
 	_DestroyDebugMesh DestroyDebugMesh = nullptr;
+	_GetPlayerInfo GetInfo = nullptr;
 
 	EngineDemoPlayer *demoplayer = nullptr;
 	EngineDemoRecorder *demorecorder = nullptr;
@@ -119,7 +121,7 @@ public:
 	int pauseTick;
 	bool hasWaited = false;
 	bool startedTransitionFadeout = false;
-	bool forcedPrimaryFullscreen = false;
+	bool coopResumed = false;
 	bool shouldPauseForSync = false;
 	bool isLevelTransition = false;
 	int tickLoadStarted = -1;
@@ -156,15 +158,14 @@ public:
 	void SetSkipping(bool skipping);
 	bool IsSkipping();
 	Color GetLightAtPoint(Vector point);
+	bool GetPlayerInfo(int ent_num, player_info_t *pInfo);
+	std::string GetPartnerSteamID32();
 
 	// CClientState::Disconnect
 	DECL_DETOUR(Disconnect, bool bShowMainMenu);
 
 	// CClientState::SetSignonState
 	DECL_DETOUR(SetSignonState, int state, int count, void *unk);
-
-	// CVEngineServer::ChangeLevel
-	DECL_DETOUR(ChangeLevel, const char *s1, const char *s2);
 
 	// CVEngineServer::ClientCommandKeyValues
 	DECL_DETOUR(ClientCommandKeyValues, void* pEdict, KeyValues* pKeyValues);
@@ -195,6 +196,8 @@ public:
 	DECL_DETOUR_COMMAND(load);
 	DECL_DETOUR_COMMAND(give);
 	DECL_DETOUR_COMMAND(exec);
+	DECL_DETOUR_COMMAND(changelevel_command);
+	DECL_DETOUR_COMMAND(changelevel2_command);
 
 	DECL_DETOUR(ReadCustomData, int *callbackIndex, char **data);
 	DECL_DETOUR_T(const char *, ReadConsoleCommand);
@@ -236,6 +239,8 @@ extern Variable sar_pause_for;
 extern Variable sar_tick_debug;
 
 extern float g_cur_fps;
+extern int g_cap_frametime;
+extern bool g_coop_pausable;
 
 #define TIME_TO_TICKS(dt) ((int)(0.5f + (float)(dt) / *engine->interval_per_tick))
 #define GET_SLOT() engine->GetLocalPlayerIndex() - 1

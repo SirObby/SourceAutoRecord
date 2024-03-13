@@ -109,7 +109,7 @@ static ClientEnt *getPortalGun(int slot) {
 	ClientEnt *pl = client->GetPlayer(slot + 1);
 	if (!pl) return nullptr;
 	CBaseHandle hnd = pl->active_weapon();
-	if (!hnd) return nullptr;
+	if (!hnd || !entityList->IsPortalGun(hnd)) return nullptr;
 	return client->GetPlayer(hnd.GetEntryIndex());
 }
 
@@ -149,6 +149,9 @@ void Crosshair::GetPortalsStates(int slot, int &portalUpgradeState, bool &isBlue
 			auto orangePos = gun->field<Vector>("m_vecOrangePortalPos");
 			if (bluePos != Vector{ FLT_MAX, FLT_MAX, FLT_MAX }) isBlueActive = true;
 			if (orangePos != Vector{ FLT_MAX, FLT_MAX, FLT_MAX }) isOrangeActive = true;
+			// with single portal gun, the crosshair is always active
+			if (portalUpgradeState == 0b01) isBlueActive = true;
+			if (portalUpgradeState == 0b10) isOrangeActive = true;
 		}
 	}
 }

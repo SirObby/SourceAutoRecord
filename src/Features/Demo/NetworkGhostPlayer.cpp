@@ -5,6 +5,7 @@
 #include "Event.hpp"
 #include "Scheduler.hpp"
 #include "Features/Hud/Toasts.hpp"
+#include "Features/NetMessage.hpp"
 #include "Features/Session.hpp"
 #include "Features/Speedrun/SpeedrunTimer.hpp"
 #include "GhostEntity.hpp"
@@ -19,6 +20,8 @@
 #include <functional>
 #include <queue>
 #include <set>
+
+#define ORANGE_MESSAGE_TYPE "orange-msg"
 
 Variable ghost_sync_countdown("ghost_sync_countdown", "3", 0, "The number of seconds of countdown to show at the start of every synced map. 0 to disable.\n");
 Variable ghost_spec_see_spectators("ghost_spec_see_spectators", "0", "Whether to see other spectators while spectating.\n");
@@ -47,7 +50,10 @@ public:
 			if (engine->shouldPauseForSync) {
 				engine->shouldPauseForSync = false;
 			} else {
-				engine->ExecuteCommand("unpause");
+				if (!engine->IsCoop() || !engine->IsOrange()) {
+					engine->ExecuteCommand("unpause");
+					if (engine->IsCoop()) Variable("sv_pausable").SetValue(g_coop_pausable ? "1" : "0");
+				}
 				ghostLeaderboard.SyncReady();
 			}
 		} else {
@@ -61,7 +67,10 @@ public:
 		if (this->countdownEnd && now >= *this->countdownEnd) {
 			this->countdownEnd = {};
 			this->active = false;
-			engine->ExecuteCommand("unpause");
+			if (!engine->IsCoop() || !engine->IsOrange()) {
+				engine->ExecuteCommand("unpause");
+				if (engine->IsCoop()) Variable("sv_pausable").SetValue(g_coop_pausable ? "1" : "0");
+			}
 			ghostLeaderboard.SyncReady();
 		}
 
@@ -317,97 +326,100 @@ NetworkManager::NetworkManager()
 }
 
 void NetworkManager::Connect(sf::IpAddress ip, unsigned short int port, bool spectator) {
-	if (this->tcpSocket.connect(ip, port, sf::seconds(5))) {
-		toastHud.AddToast(GHOST_TOAST_TAG, Utils::ssprintf("Connection timed out! Cannot connect to the server at %s:%d", ip.toString().c_str(), port));
-		return;
-	}
-
-	if (this->udpSocket.bind(sf::Socket::AnyPort) != sf::Socket::Done) {
-		toastHud.AddToast(GHOST_TOAST_TAG, Utils::ssprintf("Connection timed out! Cannot connect to the server at %s:%d", ip.toString().c_str(), port));
-		return;
-	}
-
-	this->udpSocket.setBlocking(false);
-	this->tcpSocket.setBlocking(true);
-
-	this->serverIP = ip;
-	this->serverPort = port;
-
-	this->spectator = spectator;
-
-	sf::Packet connection_packet;
-	connection_packet << HEADER::CONNECT << this->udpSocket.getLocalPort() << this->name.c_str() << DataGhost{{0, 0, 0}, {0, 0, 0}, 0, false} << this->modelName.c_str() << engine->GetCurrentMapName().c_str() << ghost_TCP_only.GetBool() << GhostEntity::set_color << spectator;
-	this->tcpSocket.send(connection_packet);
-
-	{
-		sf::SocketSelector tcpSelector;
-		tcpSelector.add(this->tcpSocket);
-
-		sf::Packet confirm_connection;
-		if (!tcpSelector.wait(sf::seconds(30))) {
-			toastHud.AddToast(GHOST_TOAST_TAG, Utils::ssprintf("Handshake timed out! Cannot connect to the server at %s:%d", ip.toString().c_str(), port));
+	std::thread connectionThread([this, ip, port, spectator]() {
+		if (this->tcpSocket.connect(ip, port, sf::seconds(5))) {
+			toastHud.AddToast(GHOST_TOAST_TAG, Utils::ssprintf("Connection timed out! Cannot connect to the server at %s:%d", ip.toString().c_str(), port));
 			return;
 		}
 
-		if (this->tcpSocket.receive(confirm_connection) != sf::Socket::Done) {
-			toastHud.AddToast(GHOST_TOAST_TAG, Utils::ssprintf("Transfer timed out! Cannot connect to the server at %s:%d", ip.toString().c_str(), port));
+		if (this->udpSocket.bind(sf::Socket::AnyPort) != sf::Socket::Done) {
+			toastHud.AddToast(GHOST_TOAST_TAG, Utils::ssprintf("Connection timed out! Cannot connect to the server at %s:%d", ip.toString().c_str(), port));
 			return;
 		}
 
-		//Get our ID
-		confirm_connection >> this->ID;
+		this->udpSocket.setBlocking(false);
+		this->tcpSocket.setBlocking(true);
 
-		if (!this->spectator) ghostLeaderboard.AddNew(this->ID, this->name);
+		this->serverIP = ip;
+		this->serverPort = port;
 
-		//Add every player connected to the ghostPool
-		int nb_players = 0;
-		int nb_spectators = 0;
-		sf::Uint32 nb_ghosts;
-		confirm_connection >> nb_ghosts;
-		for (sf::Uint32 i = 0; i < nb_ghosts; ++i) {
-			sf::Uint32 ID;
-			std::string name;
-			DataGhost data;
-			std::string model_name;
-			std::string current_map;
-			Color color;
-			bool spectator;
-			confirm_connection >> ID >> name >> data >> model_name >> current_map >> color >> spectator;
+		this->spectator = spectator;
 
-			auto ghost = std::make_shared<GhostEntity>(ID, name, data, current_map, true);
-			ghost->modelName = model_name;
-			ghost->color = color;
-			ghost->spectator = spectator;
-			this->ghostPoolLock.lock();
-			this->ghostPool.push_back(ghost);
-			this->ghostPoolLock.unlock();
-			if (!spectator) ghostLeaderboard.AddNew(ghost->ID, ghost->name);
-			if (spectator) ++nb_spectators;
-			else ++nb_players;
+		sf::Packet connection_packet;
+		connection_packet << HEADER::CONNECT << this->udpSocket.getLocalPort() << this->name.c_str() << DataGhost{{0, 0, 0}, {0, 0, 0}, 0, false} << this->modelName.c_str() << engine->GetCurrentMapName().c_str() << ghost_TCP_only.GetBool() << GhostEntity::set_color << spectator;
+		this->tcpSocket.send(connection_packet);
+
+		{
+			sf::SocketSelector tcpSelector;
+			tcpSelector.add(this->tcpSocket);
+
+			sf::Packet confirm_connection;
+			if (!tcpSelector.wait(sf::seconds(30))) {
+				toastHud.AddToast(GHOST_TOAST_TAG, Utils::ssprintf("Handshake timed out! Cannot connect to the server at %s:%d", ip.toString().c_str(), port));
+				return;
+			}
+
+			if (this->tcpSocket.receive(confirm_connection) != sf::Socket::Done) {
+				toastHud.AddToast(GHOST_TOAST_TAG, Utils::ssprintf("Transfer timed out! Cannot connect to the server at %s:%d", ip.toString().c_str(), port));
+				return;
+			}
+
+			//Get our ID
+			confirm_connection >> this->ID;
+
+			if (!this->spectator) ghostLeaderboard.AddNew(this->ID, this->name);
+
+			//Add every player connected to the ghostPool
+			int nb_players = 0;
+			int nb_spectators = 0;
+			sf::Uint32 nb_ghosts;
+			confirm_connection >> nb_ghosts;
+			for (sf::Uint32 i = 0; i < nb_ghosts; ++i) {
+				sf::Uint32 ID;
+				std::string name;
+				DataGhost data;
+				std::string model_name;
+				std::string current_map;
+				Color color;
+				bool spectator;
+				confirm_connection >> ID >> name >> data >> model_name >> current_map >> color >> spectator;
+
+				auto ghost = std::make_shared<GhostEntity>(ID, name, data, current_map, true);
+				ghost->modelName = model_name;
+				ghost->color = color;
+				ghost->spectator = spectator;
+				this->ghostPoolLock.lock();
+				this->ghostPool.push_back(ghost);
+				this->ghostPoolLock.unlock();
+				if (!spectator) ghostLeaderboard.AddNew(ghost->ID, ghost->name);
+				if (spectator) ++nb_spectators;
+				else ++nb_players;
+			}
+
+			this->UpdateGhostsSameMap();
+			if (engine->isRunning()) {
+				this->SpawnAllGhosts();
+			}
+
+			if (this->spectator) {
+				toastHud.AddToast(GHOST_TOAST_TAG, Utils::ssprintf("Successfully connected to the server as a spectator!\n%d players and %d other spectators connected\n", nb_players, nb_spectators));
+			} else {
+				toastHud.AddToast(GHOST_TOAST_TAG, Utils::ssprintf("Successfully connected to the server!\n%d other players connected\n", nb_players));
+			}
+		}  //End of the scope. Will kill the Selector
+
+		this->isConnected = true;
+		this->runThread = true;
+		this->waitForRunning.notify_one();
+		this->networkThread = std::thread(&NetworkManager::RunNetwork, this);
+		this->networkThread.detach();
+
+		if (ghost_net_dump.GetBool()) {
+			startNetDump();
+			addToNetDump("connect", Utils::ssprintf("%s:%d", ip.toString().c_str(), port).c_str());
 		}
-
-		this->UpdateGhostsSameMap();
-		if (engine->isRunning()) {
-			this->SpawnAllGhosts();
-		}
-
-		if (this->spectator) {
-			toastHud.AddToast(GHOST_TOAST_TAG, Utils::ssprintf("Successfully connected to the server as a spectator!\n%d players and %d other spectators connected\n", nb_players, nb_spectators));
-		} else {
-			toastHud.AddToast(GHOST_TOAST_TAG, Utils::ssprintf("Successfully connected to the server!\n%d other players connected\n", nb_players));
-		}
-	}  //End of the scope. Will kill the Selector
-
-	this->isConnected = true;
-	this->runThread = true;
-	this->waitForRunning.notify_one();
-	this->networkThread = std::thread(&NetworkManager::RunNetwork, this);
-	this->networkThread.detach();
-
-	if (ghost_net_dump.GetBool()) {
-		startNetDump();
-		addToNetDump("connect", Utils::ssprintf("%s:%d", ip.toString().c_str(), port).c_str());
-	}
+	});
+	connectionThread.detach();
 }
 
 void NetworkManager::Disconnect() {
@@ -464,7 +476,7 @@ void NetworkManager::RunNetwork() {
 			// It's been one update rate interval - send our data again
 			// if we need to
 
-			if (engine->isRunning() && !engine->IsGamePaused()) {
+			if ((engine->isRunning() || engine->IsOrange()) && !engine->IsGamePaused()) {
 				this->SendPlayerData();
 			}
 
@@ -503,7 +515,7 @@ void NetworkManager::SendPlayerData() {
 	auto player = client->GetPlayer(GET_SLOT() + 1);
 	if (player) {
 		bool grounded = player->ground_entity();
-		packet << DataGhost{client->GetAbsOrigin(player), engine->GetAngles(GET_SLOT()), client->GetViewOffset(player).z, grounded};
+		packet << DataGhost{client->GetAbsOrigin(player), engine->GetAngles(engine->IsOrange() ? 0 : GET_SLOT()), client->GetViewOffset(player).z, grounded};
 	} else {
 		packet << DataGhost{{0, 0, 0}, {0, 0, 0}, 0, false};
 	}
@@ -1077,13 +1089,14 @@ void NetworkManager::UpdateSyncUi() {
 }
 
 ON_EVENT(RENDER) {
-	if (networkManager.isConnected && engine->isRunning()) {
+	if (networkManager.isConnected && (engine->isRunning() || engine->IsOrange())) {
+		// Is this executed on orange?? (is the engine considered running?)
 		networkManager.UpdateGhostsPosition();
 	}
 }
 
 ON_EVENT(PRE_TICK) {
-	if (networkManager.isConnected && engine->isRunning()) {
+	if (networkManager.isConnected && (engine->isRunning() || engine->IsOrange())) {
 		if (networkManager.isCountdownReady) {
 			networkManager.UpdateCountdown();
 		}
@@ -1178,38 +1191,58 @@ CON_COMMAND(ghost_ping, "Pong!\n") {
 	networkManager.SendPing();
 }
 
-static bool g_isGhostChat = false;
-static bool g_wasGhostChat = false;
+int g_chatType = 0;
+int g_wasChatType = 0;
 
-bool NetworkManager::HandleGhostSay(const char *msg) {
-	if (!g_wasGhostChat) return false;
+bool NetworkManager::HandleGhostSay(const char *msg, int clientidx) {
+	if (Utils::StartsWith(msg, "\x07")) return false; // orange saying IT'S REAL
+	if (clientidx != 1) {
+		NetMessage::SendMsg(ORANGE_MESSAGE_TYPE, msg, strlen(msg));
+		return true;
+	}
+
+	if (g_chatType != 0 || g_wasChatType != 2) {
+		return false;
+	}
 
 	if (networkManager.isConnected) {
 		networkManager.SendMessageToAll(msg);
 	}
 
+	g_wasChatType = 0;
 	return true;
 }
 
+ON_INIT {
+	NetMessage::RegisterHandler(ORANGE_MESSAGE_TYPE, +[](const void *data, size_t size) {
+		auto msg = std::string((char *)data, size);
+		if (engine->IsOrange()) {
+			if (g_wasChatType == 2) {
+				if (networkManager.isConnected) networkManager.SendMessageToAll(msg.c_str());
+			} else {
+				engine->ExecuteCommand(Utils::ssprintf("say \"\x07%s\"", msg.c_str()).c_str(), true);
+			}
+			g_wasChatType = 0;
+		}
+	});
+}
+
 ON_EVENT(FRAME) {
-	if (g_isGhostChat) g_wasGhostChat = true;
+	if ((g_chatType == 2 && !networkManager.isConnected) || 
+		(g_chatType == 0 && Variable("cl_chat_active").GetBool())) g_chatType = 1;
 
-	if (!networkManager.isConnected) {
-		g_isGhostChat = false;
-		g_wasGhostChat = false;
+	if (g_chatType != 0) {
+		g_wasChatType = g_chatType;
 	}
-
-	if (!Variable("cl_chat_active").GetBool() && g_isGhostChat) {
-		g_isGhostChat = false;
-		Scheduler::InHostTicks(10, []() {
-			g_wasGhostChat = false;
-		});
+	if (!Variable("cl_chat_active").GetBool()) {
+		g_chatType = 0;
 	}
 }
 
 CON_COMMAND(ghost_chat, "ghost_chat - open the chat HUD for messaging other players\n") {
-	if (networkManager.isConnected) {
-		g_isGhostChat = true;
+	if (g_chatType == 0 && networkManager.isConnected) {
+		g_wasChatType = 0;
+		g_chatType = 2;
 		client->OpenChat();
 	}
 }

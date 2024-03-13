@@ -12,7 +12,7 @@
 
 // if blue: whether orange is ready
 // if orange: whether we've sent the ready packet
-static bool g_orangeReady = false;
+bool g_orangeReady = false;
 
 static std::map<std::string, void (*)(const void *, size_t)> g_handlers;
 
@@ -75,7 +75,7 @@ void NetMessage::SendMsg(const char *type, const void *data, size_t size) {
 	}
 
 	if (readyToSend()) {
-		engine->ExecuteCommand(cmd.c_str());
+		engine->ExecuteCommand(cmd.c_str(), true);
 	} else {
 		g_queued.push(cmd);
 	}
